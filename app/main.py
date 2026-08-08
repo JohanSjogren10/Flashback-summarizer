@@ -107,5 +107,10 @@ def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if not STATIC_DIR.exists():
+    raise RuntimeError(
+        f"Static-katalogen saknas: {STATIC_DIR}. "
+        "Kontrollera att 'static/' finns i projektet."
+    )
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

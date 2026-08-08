@@ -100,7 +100,7 @@ def _extractive_summary(text: str, max_sentences: int) -> List[str]:
     max_freq = max(freqs.values())
     scored: List[tuple[float, int, str]] = []
     for index, sentence in enumerate(sentences):
-        words = [w for w in _WORD_RE.findall(sentence.lower())]
+        words = _WORD_RE.findall(sentence.lower())
         if not words:
             continue
         score = sum(freqs.get(w, 0) for w in words) / max_freq
@@ -256,5 +256,6 @@ def _parse_llm_response(
         elif line.startswith(("-", "*", "•")):
             bullets.append(line.lstrip("-*• ").strip())
     if not tldr and response:
-        tldr = split_sentences(response)[:1] and split_sentences(response)[0] or response[:280]
+        response_sentences = split_sentences(response)
+        tldr = response_sentences[0] if response_sentences else response[:280]
     return tldr, bullets[:bullet_target]
