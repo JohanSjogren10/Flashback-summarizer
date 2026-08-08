@@ -39,6 +39,27 @@ export OPENAI_MODEL="gpt-4o-mini"   # valfritt
 
 Utan API-nyckel används den extraktiva fallbacken automatiskt.
 
+## Gratis webbsida (dela med vänner)
+
+Appen kan köras helt gratis och publikt via **Hugging Face Spaces** (Docker).
+Utan `OPENAI_API_KEY` används den kostnadsfria extraktiva sammanfattaren, så
+det finns inga API-kostnader – oavsett hur många som använder sidan.
+
+1. Skapa ett gratis konto på https://huggingface.co
+2. Klicka **New Space** → välj **Docker** som SDK (tom mall).
+3. Ladda upp projektets filer till Space:et (eller peka det mot detta
+   GitHub-repo). `Dockerfile` i roten sköter bygget automatiskt.
+4. Vänta tills bygget är klart – din publika länk blir
+   `https://<användarnamn>-<space-namn>.hf.space`. Dela den med vänner.
+
+`Dockerfile` lyssnar på porten i miljövariabeln `PORT` (standard `7860`, vilket
+Hugging Face Spaces använder). Samma image fungerar även på andra gratis-Docker-
+värdar som Render, Railway och Fly.io.
+
+> **Vill du ändå använda OpenAI-motorn i molnet?** Sätt då `OPENAI_API_KEY` som
+> en hemlighet i din Space. Observera att alla anrop då debiteras ditt eget
+> OpenAI-konto. Lämna nyckeln osatt för att hålla sidan gratis.
+
 ## API
 
 `POST /api/summarize`
