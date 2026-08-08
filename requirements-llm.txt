@@ -1,0 +1,2 @@
+# Optional dependencies for LLM-based summarization
+openai>=1.14,<2.0
