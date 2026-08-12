@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="sv">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flashback Summarizer</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Flashback Summarizer</h1>
+      <p class="subtitle">
+        Klistra in en länk till en Flashback-tråd och få en snabb
+        sammanfattning – utan att klicka dig igenom alla sidor.
+      </p>
+
+      <form id="summarize-form" autocomplete="off">
+        <label for="url">Tråd-URL</label>
+        <input
+          id="url"
+          name="url"
+          type="url"
+          placeholder="https://www.flashback.org/t1234567"
+          required
+        />
+
+        <div class="controls">
+          <div class="control">
+            <label for="length">Längd</label>
+            <select id="length" name="length">
+              <option value="short">Kort</option>
+              <option value="medium" selected>Medel</option>
+              <option value="long">Lång</option>
+            </select>
+          </div>
+          <div class="control">
+            <label for="max_pages">Max sidor</label>
+            <input
+              id="max_pages"
+              name="max_pages"
+              type="number"
+              min="1"
+              max="200"
+              value="20"
+            />
+          </div>
+        </div>
+
+        <button type="submit" id="submit-btn">Sammanfatta</button>
+      </form>
+
+      <div id="status" class="status" hidden></div>
+
+      <section id="result" class="result" hidden>
+        <h2 id="result-title"></h2>
+        <p id="meta" class="meta"></p>
+        <div class="tldr">
+          <h3>TL;DR</h3>
+          <p id="tldr"></p>
+        </div>
+        <div class="bullets">
+          <h3>Nyckelpunkter</h3>
+          <ul id="bullets"></ul>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
