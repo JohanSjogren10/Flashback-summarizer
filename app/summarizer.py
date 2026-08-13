@@ -206,9 +206,10 @@ class Summarizer:
         if self._llm is not None:
             tldr, bullets = self._summarize_llm(text, bullet_target)
             backend = "llm"
-            if not tldr and not bullets:
-                # The provider failed (rate limit, outage, ...): free tiers are
-                # best effort, so degrade gracefully instead of erroring out.
+            if not tldr or not bullets:
+                # The provider failed or returned an unusable answer (rate
+                # limit, outage, ...): free tiers are best effort, so degrade
+                # gracefully instead of returning an empty summary.
                 tldr, bullets = self._summarize_extractive(text, bullet_target)
                 backend = "extractive"
         else:
