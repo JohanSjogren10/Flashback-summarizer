@@ -3,3 +3,6 @@ uvicorn[standard]>=0.29,<1.0
 httpx>=0.27,<1.0
 beautifulsoup4>=4.12,<5.0
 pydantic>=2.6,<3.0
+# OpenAI-compatible client, used for free LLM providers (Groq, OpenRouter,
+# Gemini). Unused – and free – when no LLM_API_KEY is set.
+openai>=1.14,<2.0

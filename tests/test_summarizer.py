@@ -1,5 +1,12 @@
 """Tests for the summarizer (extractive fallback)."""
-from app.summarizer import Summarizer, chunk_text, split_sentences
+from app.summarizer import (
+    Summarizer,
+    chunk_text,
+    llm_api_key,
+    llm_base_url,
+    llm_model,
+    split_sentences,
+)
 
 
 def test_split_sentences():
@@ -48,3 +55,41 @@ def test_empty_text_returns_message():
     result = summarizer.summarize("", length="medium")
     assert result.bullets == []
     assert "Ingen text" in result.tldr
+
+
+def test_llm_config_prefers_provider_neutral_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "gammal")
+    monkeypatch.setenv("LLM_API_KEY", "ny")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("LLM_MODEL", "llama-3.3-70b-versatile")
+    assert llm_api_key() == "ny"
+    assert llm_base_url() == "https://api.groq.com/openai/v1"
+    assert llm_model() == "llama-3.3-70b-versatile"
+
+
+def test_llm_config_falls_back_to_openai_env(monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "gammal")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    assert llm_api_key() == "gammal"
+    assert llm_base_url() is None
+    assert llm_model() == "gpt-4o-mini"
+
+
+def test_llm_failure_falls_back_to_extractive():
+    text = (
+        "En man hittades död i sin lägenhet i Stockholm. "
+        "Polisen misstänker mord och har inlett en förundersökning. "
+        "Grannar hörde bråk kvällen innan."
+    )
+    summarizer = Summarizer(api_key=None)
+    # Simulate a configured provider whose calls all fail (rate limited, ...).
+    summarizer._llm = object()
+    summarizer._summarize_llm = lambda *args, **kwargs: ("", [])
+    result = summarizer.summarize(text, length="short")
+    assert result.backend == "extractive"
+    assert result.tldr
+    assert result.bullets

@@ -12,8 +12,10 @@ map-reduce-strategi så att även mycket långa trådar kan hanteras.
 - **Scraping** av alla sidor i en tråd (Flashback paginerar via `t<id>p<sida>`),
   med custom `User-Agent`, fördröjning mellan requests och en sidgräns.
 - **Sammanfattning** med chunkning + map-reduce.
-  - **LLM-motor** (OpenAI) när `OPENAI_API_KEY` är satt och `openai` är installerat.
-  - **Extraktiv fallback** utan externa API:er eller kostnad (fungerar offline).
+  - **LLM-motor** via valfri OpenAI-kompatibel tjänst (t.ex. Groq, OpenRouter
+    eller Google Gemini – alla har gratisnivåer) när `LLM_API_KEY` är satt.
+  - **Extraktiv fallback** utan externa API:er eller kostnad (fungerar offline,
+    och används automatiskt om LLM-anropet misslyckas).
 - **Enkelt webbgränssnitt**: klistra in URL, välj längd och max antal sidor.
 
 ## Kom igång
@@ -29,36 +31,65 @@ uvicorn app.main:app --reload
 
 Öppna sedan http://127.0.0.1:8000 i webbläsaren.
 
-### Aktivera LLM-sammanfattning (valfritt)
+### Aktivera LLM-sammanfattning (valfritt, gratisnivåer finns)
+
+Appen pratar med vilken OpenAI-kompatibel chat-API som helst. Välj en
+leverantör med gratisnivå och sätt tre miljövariabler:
+
+| Leverantör | `LLM_BASE_URL` | Exempel på `LLM_MODEL` |
+| --- | --- | --- |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.0-flash` |
+| OpenAI (betald) | *(lämna tom)* | `gpt-4o-mini` |
 
 ```bash
-pip install -r requirements-llm.txt
-export OPENAI_API_KEY="din-nyckel"
-export OPENAI_MODEL="gpt-4o-mini"   # valfritt
+export LLM_API_KEY="din-nyckel"
+export LLM_BASE_URL="https://api.groq.com/openai/v1"
+export LLM_MODEL="llama-3.3-70b-versatile"
 ```
 
-Utan API-nyckel används den extraktiva fallbacken automatiskt.
+De äldre namnen `OPENAI_API_KEY`, `OPENAI_BASE_URL` och `OPENAI_MODEL` fungerar
+fortfarande. Utan nyckel används den extraktiva fallbacken automatiskt, och
+appen kostar då ingenting alls.
 
 ## Gratis webbsida (dela med vänner)
 
-Appen kan köras helt gratis och publikt via **Hugging Face Spaces** (Docker).
-Utan `OPENAI_API_KEY` används den kostnadsfria extraktiva sammanfattaren, så
-det finns inga API-kostnader – oavsett hur många som använder sidan.
+Appen kräver ingen databas och ingen betald tjänst. Rekommenderade
+gratisalternativ (Hugging Face Spaces används inte längre eftersom en
+Docker-Space kostar pengar):
 
-1. Skapa ett gratis konto på https://huggingface.co
-2. Klicka **New Space** → välj **Docker** som SDK (tom mall).
-3. Ladda upp projektets filer till Space:et (eller peka det mot detta
-   GitHub-repo). `Dockerfile` i roten sköter bygget automatiskt.
-4. Vänta tills bygget är klart – din publika länk blir
-   `https://<användarnamn>-<space-namn>.hf.space`. Dela den med vänner.
+### Render (enklast, gratisplan)
 
-`Dockerfile` lyssnar på porten i miljövariabeln `PORT` (standard `7860`, vilket
-Hugging Face Spaces använder). Samma image fungerar även på andra gratis-Docker-
-värdar som Render, Railway och Fly.io.
+1. Skapa ett konto på https://render.com och välj **New → Blueprint**.
+2. Peka det mot detta GitHub-repo. `render.yaml` i roten konfigurerar allt:
+   gratisplan, Python 3.12, `pip install -r requirements.txt` och start med
+   uvicorn på `$PORT`.
+3. Din publika länk blir `https://<tjänstnamn>.onrender.com`.
 
-> **Vill du ändå använda OpenAI-motorn i molnet?** Sätt då `OPENAI_API_KEY` som
-> en hemlighet i din Space. Observera att alla anrop då debiteras ditt eget
-> OpenAI-konto. Lämna nyckeln osatt för att hålla sidan gratis.
+Gratisinstanser somnar efter ~15 minuters inaktivitet; första anropet därefter
+tar några sekunder extra. Hälsokontroll finns på `/api/health`.
+
+### Koyeb (gratis nano-instans, sover inte)
+
+1. Skapa ett konto på https://koyeb.com → **Create Web Service → GitHub**.
+2. Välj **Buildpack** (läser `Procfile` och `runtime.txt`) eller **Dockerfile**.
+3. Sätt hälsokontroll till `/api/health`. Porten läses från `PORT`.
+
+### Andra Docker-värdar
+
+`Dockerfile` är värd-agnostisk och lyssnar på `PORT` (standard `8000`), så
+samma image kan köras på t.ex. Fly.io, Google Cloud Run eller en egen server:
+
+```bash
+docker build -t flashback-summarizer .
+docker run -p 8000:8000 flashback-summarizer
+```
+
+> **Vill du använda LLM-motorn i molnet?** Sätt `LLM_API_KEY`, `LLM_BASE_URL`
+> och `LLM_MODEL` som hemligheter hos din värd. Med en leverantörs gratisnivå
+> förblir sidan gratis, men den kan bli hastighetsbegränsad – då faller appen
+> automatiskt tillbaka på den extraktiva sammanfattaren.
 
 ## API
 
@@ -87,7 +118,9 @@ Svar:
 }
 ```
 
-`GET /api/health` returnerar status och om en LLM-nyckel finns.
+`GET /api/health` returnerar status, vilken backend som används och (om en
+nyckel är satt) modell och bas-URL. Använd den som hälsokontroll hos din
+värd.
 
 ## Tester
 
