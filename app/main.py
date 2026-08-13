@@ -1,7 +1,6 @@
 """FastAPI application for the Flashback thread summarizer."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .scraper import ScrapeError, is_flashback_thread_url, scrape_thread
-from .summarizer import Summarizer
+from .summarizer import Summarizer, llm_api_key, llm_base_url, llm_model
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -99,7 +98,14 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "llm": bool(os.environ.get("OPENAI_API_KEY"))}
+    has_key = bool(llm_api_key())
+    return {
+        "status": "ok",
+        "llm": has_key,
+        "backend": "llm" if has_key else "extractive",
+        "model": llm_model() if has_key else None,
+        "base_url": llm_base_url() if has_key else None,
+    }
 
 
 @app.get("/")

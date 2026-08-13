@@ -6,8 +6,10 @@ chunk summaries are combined into a final summary.
 
 Two backends are supported:
 
-* An LLM backend (OpenAI) when ``OPENAI_API_KEY`` is set and the ``openai``
-  package is installed.
+* An LLM backend that talks to any OpenAI-compatible chat API. It is used when
+  ``LLM_API_KEY`` (or the legacy ``OPENAI_API_KEY``) is set and the ``openai``
+  package is installed. Several providers offer free tiers, e.g. Groq,
+  OpenRouter and Google Gemini – point ``LLM_BASE_URL`` at the provider.
 * A dependency-free extractive fallback that scores sentences by word
   frequency. This keeps the app usable offline and without API costs.
 """
@@ -31,6 +33,38 @@ _STOPWORDS = {
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _WORD_RE = re.compile(r"[\wåäöÅÄÖ]+", re.UNICODE)
+
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+
+
+def llm_api_key() -> Optional[str]:
+    """Return the configured LLM API key, if any.
+
+    ``LLM_API_KEY`` is the provider-neutral name; ``OPENAI_API_KEY`` is kept
+    for backwards compatibility.
+    """
+    return os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+
+def llm_base_url() -> Optional[str]:
+    """Return the OpenAI-compatible base URL, if a custom one is configured.
+
+    Free-tier examples:
+
+    * Groq: ``https://api.groq.com/openai/v1``
+    * OpenRouter: ``https://openrouter.ai/api/v1``
+    * Google Gemini: ``https://generativelanguage.googleapis.com/v1beta/openai``
+    """
+    return os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+
+
+def llm_model() -> str:
+    """Return the configured chat model name."""
+    return (
+        os.environ.get("LLM_MODEL")
+        or os.environ.get("OPENAI_MODEL")
+        or DEFAULT_LLM_MODEL
+    )
 
 
 @dataclass
@@ -122,12 +156,12 @@ class Summarizer:
         *,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        base_url: Optional[str] = None,
         chunk_size: int = 6000,
     ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.model = model or os.environ.get(
-            "OPENAI_MODEL", "gpt-4o-mini"
-        )
+        self.api_key = api_key or llm_api_key()
+        self.model = model or llm_model()
+        self.base_url = base_url or llm_base_url()
         self.chunk_size = chunk_size
         self._llm = self._init_llm()
 
@@ -143,6 +177,8 @@ class Summarizer:
         except ImportError:
             return None
         try:
+            if self.base_url:
+                return OpenAI(api_key=self.api_key, base_url=self.base_url)
             return OpenAI(api_key=self.api_key)
         except Exception:  # pragma: no cover - defensive
             return None
@@ -169,13 +205,21 @@ class Summarizer:
 
         if self._llm is not None:
             tldr, bullets = self._summarize_llm(text, bullet_target)
+            backend = "llm"
+            if not tldr or not bullets:
+                # The provider failed or returned an unusable answer (rate
+                # limit, outage, ...): free tiers are best effort, so degrade
+                # gracefully instead of returning an empty summary.
+                tldr, bullets = self._summarize_extractive(text, bullet_target)
+                backend = "extractive"
         else:
             tldr, bullets = self._summarize_extractive(text, bullet_target)
+            backend = "extractive"
 
         return SummaryResult(
             tldr=tldr,
             bullets=bullets,
-            backend=self.backend,
+            backend=backend,
             num_posts=num_posts,
             num_pages_estimate=num_pages_estimate,
         )

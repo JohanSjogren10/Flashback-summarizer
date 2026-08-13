@@ -12,7 +12,9 @@ client = TestClient(app)
 def test_health():
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["backend"] in ("llm", "extractive")
 
 
 def test_summarize_rejects_invalid_url():
