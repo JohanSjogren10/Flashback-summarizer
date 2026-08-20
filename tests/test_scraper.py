@@ -120,6 +120,9 @@ def test_select_pages_spread_samples_whole_thread():
     assert select_pages(300, 3, "last") == [1, 299, 300]
     # Short threads are read in full regardless of strategy.
     assert select_pages(3, 10, "spread") == [1, 2, 3]
+    # A single page budget only ever reads the first page.
+    assert select_pages(300, 1, "spread") == [1]
+    assert select_pages(300, 1, "last") == [1]
 
 
 def test_parse_retry_after():

@@ -252,6 +252,8 @@ def select_pages(
     if total_pages <= max_pages:
         return list(range(1, total_pages + 1))
 
+    if max_pages == 1:
+        return [1]
     if strategy == "first":
         return list(range(1, max_pages + 1))
     if strategy == "last":
@@ -422,7 +424,7 @@ class _Fetcher:
                     raise ScrapeError(
                         f"Kunde inte hämta {url}: {exc}"
                     ) from exc
-                time.sleep(_jittered(self._backoff(attempt, None)))
+                time.sleep(_jittered(self._backoff(attempt)))
                 continue
 
             status = response.status_code
@@ -441,7 +443,12 @@ class _Fetcher:
             if attempt >= self.max_retries:
                 break
             retry_after = parse_retry_after(response.headers.get("Retry-After"))
-            time.sleep(_jittered(self._backoff(attempt, retry_after)))
+            if retry_after is not None:
+                # Honour the server's instruction exactly; jitter could make
+                # us retry sooner than allowed.
+                time.sleep(min(MAX_BACKOFF, retry_after))
+            else:
+                time.sleep(_jittered(self._backoff(attempt)))
 
         message = (
             f"Flashback svarade {last_status} (för många förfrågningar) för "
@@ -450,9 +457,7 @@ class _Fetcher:
         )
         raise RateLimitError(message)
 
-    def _backoff(self, attempt: int, retry_after: Optional[float]) -> float:
-        if retry_after is not None:
-            return min(MAX_BACKOFF, retry_after)
+    def _backoff(self, attempt: int) -> float:
         return min(MAX_BACKOFF, 5.0 * (2**attempt))
 
 
