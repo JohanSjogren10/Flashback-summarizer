@@ -30,6 +30,8 @@ def test_summarize_happy_path():
             Post(author="A", date=None, text="En man hittades död i Stockholm."),
             Post(author="B", date=None, text="Polisen misstänker mord och utreder."),
         ],
+        pages=[1, 2],
+        total_pages=2,
     )
     with patch("app.main.scrape_thread", return_value=fake_thread):
         response = client.post(
@@ -42,6 +44,40 @@ def test_summarize_happy_path():
     assert data["num_posts"] == 2
     assert data["tldr"]
     assert data["backend"] == "extractive"
+    assert data["pages_fetched"] == 2
+    assert data["total_pages"] == 2
+    assert data["truncated"] is False
+    assert data["notice"] is None
+
+
+def test_summarize_reports_truncated_thread():
+    fake_thread = Thread(
+        url="https://www.flashback.org/t123",
+        title="Lång tråd",
+        posts=[Post(author="A", date=None, text="Ett inlägg om en händelse.")],
+        pages=[1],
+        total_pages=300,
+        truncated=True,
+        notice="Endast 1 av 300 sidor hämtades (urval: spread).",
+    )
+    with patch("app.main.scrape_thread", return_value=fake_thread):
+        response = client.post(
+            "/api/summarize",
+            json={"url": "https://www.flashback.org/t123", "strategy": "spread"},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["truncated"] is True
+    assert data["total_pages"] == 300
+    assert "300 sidor" in data["notice"]
+
+
+def test_summarize_rejects_unknown_strategy():
+    response = client.post(
+        "/api/summarize",
+        json={"url": "https://www.flashback.org/t123", "strategy": "random"},
+    )
+    assert response.status_code == 422
 
 
 def test_index_served():

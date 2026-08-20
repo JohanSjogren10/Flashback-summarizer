@@ -288,7 +288,10 @@ def parse_retry_after(value: Optional[str]) -> Optional[float]:
         return max(0.0, float(value))
     except ValueError:
         pass
-    parsed = email.utils.parsedate_to_datetime(value)
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
     if parsed is None:
         return None
     try:
