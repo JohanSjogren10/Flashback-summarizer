@@ -1,15 +1,19 @@
 """Scraping utilities for Flashback threads.
 
-Fetches all pages of a thread, parses individual posts and returns cleaned
-text. Designed to be polite to the server (configurable delay, custom
-User-Agent, and a hard cap on the number of pages).
+Fetches pages of a thread, parses individual posts and returns cleaned text.
+Designed to be polite to the server: configurable delay with jitter, adaptive
+throttling and retries when the server answers ``429 Too Many Requests``, a
+custom User-Agent, a small page cache and a hard cap on the number of pages.
 """
 from __future__ import annotations
 
+import email.utils
+import random
 import re
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -19,6 +23,20 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (compatible; FlashbackSummarizer/1.0; "
     "+https://github.com/JohanSjogren10/Flashback-summarizer)"
 )
+
+#: HTTP status codes that are worth retrying after a pause.
+RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+#: Upper bound for the adaptive delay between page requests (seconds).
+MAX_DELAY = 15.0
+
+#: Longest single backoff pause we are willing to wait (seconds).
+MAX_BACKOFF = 60.0
+
+#: How long a cached page stays fresh (seconds).
+CACHE_TTL = 900.0
+
+STRATEGIES = ("first", "spread", "last")
 
 # Flashback thread URLs look like:
 #   https://www.flashback.org/t1234567
@@ -42,15 +60,31 @@ class Thread:
     url: str
     title: Optional[str]
     posts: List[Post] = field(default_factory=list)
+    #: Page numbers that were actually fetched, in the order they were read.
+    pages: List[int] = field(default_factory=list)
+    #: Total number of pages the thread has (as advertised by Flashback).
+    total_pages: int = 1
+    #: True when we did not read every page of the thread.
+    truncated: bool = False
+    #: Human readable explanation of *why* the thread was truncated.
+    notice: Optional[str] = None
 
     @property
     def text(self) -> str:
         """All post texts joined into a single string."""
         return "\n\n".join(p.text for p in self.posts if p.text)
 
+    @property
+    def pages_fetched(self) -> int:
+        return len(self.pages)
+
 
 class ScrapeError(Exception):
     """Raised when a thread cannot be scraped."""
+
+
+class RateLimitError(ScrapeError):
+    """Raised when the server keeps answering ``429 Too Many Requests``."""
 
 
 def is_flashback_thread_url(url: str) -> bool:
@@ -199,14 +233,245 @@ def detect_last_page(html: str) -> int:
     return max_page
 
 
+def select_pages(
+    total_pages: int, max_pages: int, strategy: str = "spread"
+) -> List[int]:
+    """Pick which pages to fetch from a thread with *total_pages* pages.
+
+    ``first`` reads the beginning of the thread, ``last`` the end and
+    ``spread`` an evenly distributed sample across the whole thread. Page 1 is
+    always included because it carries the title and the pagination links.
+    """
+    if strategy not in STRATEGIES:
+        raise ScrapeError(
+            "Okänd strategi: " + strategy + ". Välj 'first', 'spread' "
+            "eller 'last'."
+        )
+    total_pages = max(1, total_pages)
+    max_pages = max(1, max_pages)
+    if total_pages <= max_pages:
+        return list(range(1, total_pages + 1))
+
+    if max_pages == 1:
+        return [1]
+    if strategy == "first":
+        return list(range(1, max_pages + 1))
+    if strategy == "last":
+        pages = list(range(total_pages - max_pages + 2, total_pages + 1))
+        return [1] + pages
+
+    # "spread": page 1, the last page and an even sample in between.
+    step = (total_pages - 1) / (max_pages - 1)
+    pages = {1, total_pages}
+    for index in range(1, max_pages - 1):
+        pages.add(min(total_pages, 1 + round(index * step)))
+    selected = sorted(pages)
+    # Rounding can collapse duplicates; top up with unused pages nearby.
+    if len(selected) < max_pages:
+        for candidate in range(2, total_pages):
+            if len(selected) >= max_pages:
+                break
+            if candidate not in pages:
+                pages.add(candidate)
+                selected = sorted(pages)
+    return selected
+
+
+def parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Parse a ``Retry-After`` header value into seconds.
+
+    Supports both the delta-seconds and the HTTP-date form. Returns ``None``
+    when the header is missing or unparsable.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    try:
+        seconds = parsed.timestamp() - time.time()
+    except (OverflowError, OSError, ValueError):  # pragma: no cover - guard
+        return None
+    return max(0.0, seconds)
+
+
+class PageCache:
+    """A tiny thread-safe in-memory cache of fetched pages."""
+
+    def __init__(self, ttl: float = CACHE_TTL, max_entries: int = 512) -> None:
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self._entries: Dict[str, Tuple[float, str]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[str]:
+        now = time.time()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            stored_at, html = entry
+            if now - stored_at > self.ttl:
+                self._entries.pop(key, None)
+                return None
+            return html
+
+    def set(self, key: str, html: str) -> None:
+        with self._lock:
+            if len(self._entries) >= self.max_entries:
+                oldest = min(
+                    self._entries, key=lambda k: self._entries[k][0]
+                )
+                self._entries.pop(oldest, None)
+            self._entries[key] = (time.time(), html)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+#: Process-wide cache, shared between requests so a re-run is cheap.
+PAGE_CACHE = PageCache()
+
+
+def _jittered(delay: float) -> float:
+    """Add ±30 % jitter so the traffic pattern looks less robotic."""
+    if delay <= 0:
+        return 0.0
+    return delay * random.uniform(0.7, 1.3)
+
+
+def _build_client(user_agent: str, timeout: float) -> httpx.Client:
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    kwargs = dict(headers=headers, timeout=timeout, follow_redirects=True)
+    try:  # HTTP/2 needs the optional 'h2' package.
+        return httpx.Client(http2=True, **kwargs)
+    except ImportError:
+        return httpx.Client(**kwargs)
+
+
+class _Fetcher:
+    """Fetches thread pages with caching, retries and adaptive throttling."""
+
+    def __init__(
+        self,
+        client: httpx.Client,
+        *,
+        delay: float,
+        max_retries: int,
+        cache: Optional[PageCache],
+    ) -> None:
+        self.client = client
+        self.base_delay = max(0.0, delay)
+        self.delay = self.base_delay
+        self.max_retries = max(0, max_retries)
+        self.cache = cache
+        self.referer: Optional[str] = None
+        self._successes = 0
+
+    def wait_between_pages(self) -> None:
+        if self.delay > 0:
+            time.sleep(_jittered(self.delay))
+
+    def _slow_down(self) -> None:
+        self._successes = 0
+        self.delay = min(MAX_DELAY, max(1.0, self.delay * 2))
+
+    def _speed_up(self) -> None:
+        self._successes += 1
+        if self._successes >= 3 and self.delay > self.base_delay:
+            self.delay = max(self.base_delay, self.delay * 0.75)
+            self._successes = 0
+
+    def get(self, url: str) -> str:
+        if self.cache is not None:
+            cached = self.cache.get(url)
+            if cached is not None:
+                return cached
+
+        html = self._get_with_retries(url)
+        self.referer = url
+        if self.cache is not None:
+            self.cache.set(url, html)
+        return html
+
+    def _get_with_retries(self, url: str) -> str:
+        headers = {"Referer": self.referer} if self.referer else None
+        last_status: Optional[int] = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.get(url, headers=headers)
+            except httpx.HTTPError as exc:
+                if attempt >= self.max_retries:
+                    raise ScrapeError(
+                        f"Kunde inte hämta {url}: {exc}"
+                    ) from exc
+                time.sleep(_jittered(self._backoff(attempt)))
+                continue
+
+            status = response.status_code
+            if status < 400:
+                self._speed_up()
+                return response.text
+
+            if status not in RETRY_STATUS_CODES:
+                raise ScrapeError(
+                    f"Kunde inte hämta {url}: servern svarade {status}."
+                )
+
+            last_status = status
+            if status == 429:
+                self._slow_down()
+            if attempt >= self.max_retries:
+                break
+            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            if retry_after is not None:
+                # Honour the server's instruction exactly; jitter could make
+                # us retry sooner than allowed.
+                time.sleep(min(MAX_BACKOFF, retry_after))
+            else:
+                time.sleep(_jittered(self._backoff(attempt)))
+
+        message = (
+            f"Flashback svarade {last_status} (för många förfrågningar) för "
+            f"{url} även efter {self.max_retries} nya försök. Försök igen om "
+            "en stund, minska antalet sidor eller öka fördröjningen."
+        )
+        raise RateLimitError(message)
+
+    def _backoff(self, attempt: int) -> float:
+        return min(MAX_BACKOFF, 5.0 * (2**attempt))
+
+
 def scrape_thread(
     url: str,
     *,
     max_pages: int = 20,
-    delay: float = 1.0,
+    delay: float = 2.0,
     timeout: float = 20.0,
     user_agent: str = DEFAULT_USER_AGENT,
     client: Optional[httpx.Client] = None,
+    strategy: str = "spread",
+    max_retries: int = 4,
+    cache: Optional[PageCache] = PAGE_CACHE,
 ) -> Thread:
     """Scrape a Flashback thread and return the parsed :class:`Thread`.
 
@@ -217,13 +482,26 @@ def scrape_thread(
     max_pages:
         Hard cap on the number of pages fetched (politeness / cost control).
     delay:
-        Seconds to sleep between page requests.
+        Base number of seconds to wait between page requests. The delay grows
+        automatically when the server rate limits us.
     timeout:
         Per-request timeout in seconds.
     user_agent:
         Value for the ``User-Agent`` header.
     client:
         Optional pre-built httpx client (used in tests).
+    strategy:
+        How to pick pages when the thread is longer than *max_pages*:
+        ``first``, ``last`` or ``spread`` (an even sample of the thread).
+    max_retries:
+        Number of extra attempts per page when the server answers 429/5xx.
+    cache:
+        Page cache to use, or ``None`` to disable caching.
+
+    Pages that cannot be fetched because of rate limiting do not fail the
+    whole job: whatever was read is returned with ``truncated=True`` and a
+    ``notice`` explaining what happened. Only a thread where no page at all
+    could be read raises :class:`ScrapeError`.
     """
     if not is_flashback_thread_url(url):
         raise ScrapeError(
@@ -232,29 +510,40 @@ def scrape_thread(
         )
     if max_pages < 1:
         raise ScrapeError("max_pages måste vara minst 1.")
+    if strategy not in STRATEGIES:
+        raise ScrapeError(
+            f"Okänd strategi: {strategy}. Välj 'first', 'spread' eller 'last'."
+        )
 
     thread_id = _thread_id(url)
     owns_client = client is None
     if client is None:
-        client = httpx.Client(
-            headers={"User-Agent": user_agent},
-            timeout=timeout,
-            follow_redirects=True,
-        )
+        client = _build_client(user_agent, timeout)
 
+    fetcher = _Fetcher(
+        client, delay=delay, max_retries=max_retries, cache=cache
+    )
     thread = Thread(url=url, title=None)
     try:
         first_url = _page_url(url, thread_id, 1)
-        html = _get(client, first_url)
+        html = fetcher.get(first_url)
         thread.title = parse_title(html)
         thread.posts.extend(parse_posts(html))
+        thread.pages.append(1)
 
-        last_page = min(detect_last_page(html), max_pages)
-        for page in range(2, last_page + 1):
-            if delay > 0:
-                time.sleep(delay)
-            page_html = _get(client, _page_url(url, thread_id, page))
+        thread.total_pages = detect_last_page(html)
+        pages = select_pages(thread.total_pages, max_pages, strategy)
+        for page in pages:
+            if page == 1:
+                continue
+            fetcher.wait_between_pages()
+            try:
+                page_html = fetcher.get(_page_url(url, thread_id, page))
+            except RateLimitError as exc:
+                thread.notice = str(exc)
+                break
             thread.posts.extend(parse_posts(page_html))
+            thread.pages.append(page)
     finally:
         if owns_client:
             client.close()
@@ -264,13 +553,11 @@ def scrape_thread(
             "Kunde inte hitta några inlägg. Flashbacks markup kan ha ändrats "
             "eller så kräver tråden inloggning."
         )
+
+    thread.truncated = thread.pages_fetched < thread.total_pages
+    if thread.truncated and thread.notice is None:
+        thread.notice = (
+            f"Endast {thread.pages_fetched} av {thread.total_pages} sidor "
+            f"hämtades (urval: {strategy})."
+        )
     return thread
-
-
-def _get(client: httpx.Client, url: str) -> str:
-    try:
-        response = client.get(url)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:  # pragma: no cover - network errors
-        raise ScrapeError(f"Kunde inte hämta {url}: {exc}") from exc
-    return response.text

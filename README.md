@@ -9,14 +9,21 @@ map-reduce-strategi så att även mycket långa trådar kan hanteras.
 
 ## Funktioner
 
-- **Scraping** av alla sidor i en tråd (Flashback paginerar via `t<id>p<sida>`),
+- **Scraping** av sidorna i en tråd (Flashback paginerar via `t<id>p<sida>`),
   med custom `User-Agent`, fördröjning mellan requests och en sidgräns.
+- **Tål hastighetsbegränsning (429)**: nya försök med exponentiell backoff som
+  respekterar `Retry-After`, automatiskt ökad fördröjning och delresultat i
+  stället för ett kraschat jobb.
+- **Urvalsstrategi för långa trådar**: `spread` (jämnt fördelat över hela
+  tråden, standard), `first` eller `last`.
+- **Sidcache** i minnet (15 min) så att omkörningar inte belastar Flashback.
 - **Sammanfattning** med chunkning + map-reduce.
   - **LLM-motor** via valfri OpenAI-kompatibel tjänst (t.ex. Groq, OpenRouter
     eller Google Gemini – alla har gratisnivåer) när `LLM_API_KEY` är satt.
   - **Extraktiv fallback** utan externa API:er eller kostnad (fungerar offline,
     och används automatiskt om LLM-anropet misslyckas).
-- **Enkelt webbgränssnitt**: klistra in URL, välj längd och max antal sidor.
+- **Enkelt webbgränssnitt**: klistra in URL, välj längd, max antal sidor,
+  urval och fördröjning – med tidsuppskattning innan du startar.
 
 ## Kom igång
 
@@ -100,7 +107,8 @@ docker run -p 8000:8000 flashback-summarizer
   "url": "https://www.flashback.org/t1234567",
   "max_pages": 20,
   "length": "medium",
-  "delay": 1.0
+  "delay": 2.0,
+  "strategy": "spread"
 }
 ```
 
@@ -114,9 +122,24 @@ Svar:
   "bullets": ["...", "..."],
   "backend": "extractive",
   "num_posts": 42,
-  "pages_fetched": 2
+  "pages_fetched": 2,
+  "total_pages": 300,
+  "truncated": true,
+  "notice": "Endast 2 av 300 sidor hämtades (urval: spread)."
 }
 ```
+
+`strategy` styr vilka sidor som hämtas när tråden har fler sidor än
+`max_pages`: `spread` tar ett jämnt urval över hela tråden, `first` början och
+`last` slutet (sida 1 hämtas alltid).
+
+### Om `429 Too Many Requests`
+
+Flashback stryper trafik från den som hämtar många sidor snabbt. Appen gör då
+automatiskt nya försök (respekterar `Retry-After`) och ökar fördröjningen. Om
+begränsningen består returneras det som hann hämtas med `truncated: true` och
+en förklarande `notice`. Höj `delay` (t.ex. 3–5 sekunder) och/eller sänk
+`max_pages` för att slippa problemet i mycket långa trådar.
 
 `GET /api/health` returnerar status, vilken backend som används och (om en
 nyckel är satt) modell och bas-URL. Använd den som hälsokontroll hos din

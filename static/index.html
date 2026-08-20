@@ -44,7 +44,29 @@
               value="20"
             />
           </div>
+          <div class="control">
+            <label for="strategy">Urval</label>
+            <select id="strategy" name="strategy">
+              <option value="spread" selected>Spritt över tråden</option>
+              <option value="first">Början av tråden</option>
+              <option value="last">Slutet av tråden</option>
+            </select>
+          </div>
+          <div class="control">
+            <label for="delay">Fördröjning (sek)</label>
+            <input
+              id="delay"
+              name="delay"
+              type="number"
+              min="0"
+              max="60"
+              step="0.5"
+              value="2"
+            />
+          </div>
         </div>
+
+        <p id="estimate" class="meta"></p>
 
         <button type="submit" id="submit-btn">Sammanfatta</button>
       </form>
