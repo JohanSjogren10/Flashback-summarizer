@@ -9,7 +9,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .scraper import ScrapeError, is_flashback_thread_url, scrape_thread
+from .scraper import (
+    STRATEGIES,
+    ScrapeError,
+    is_flashback_thread_url,
+    scrape_thread,
+)
 from .summarizer import Summarizer, llm_api_key, llm_base_url, llm_model
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -30,7 +35,13 @@ class SummarizeRequest(BaseModel):
         "medium", description="Längd på sammanfattningen: short/medium/long."
     )
     delay: float = Field(
-        1.0, ge=0.0, le=10.0, description="Fördröjning mellan sidor (sek)."
+        2.0, ge=0.0, le=60.0, description="Fördröjning mellan sidor (sek)."
+    )
+    strategy: str = Field(
+        "spread",
+        description=(
+            "Vilka sidor som väljs i långa trådar: first/spread/last."
+        ),
     )
 
 
@@ -42,13 +53,9 @@ class SummarizeResponse(BaseModel):
     backend: str
     num_posts: int
     pages_fetched: int
-
-
-def _pages_fetched(num_posts: int) -> int:
-    # Flashback shows ~25 posts per page; used only as a rough estimate.
-    if num_posts <= 0:
-        return 0
-    return max(1, -(-num_posts // 25))
+    total_pages: int
+    truncated: bool
+    notice: Optional[str] = None
 
 
 @app.post("/api/summarize", response_model=SummarizeResponse)
@@ -57,6 +64,11 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
         raise HTTPException(
             status_code=422,
             detail="length måste vara 'short', 'medium' eller 'long'.",
+        )
+    if request.strategy not in STRATEGIES:
+        raise HTTPException(
+            status_code=422,
+            detail="strategy måste vara 'first', 'spread' eller 'last'.",
         )
     if not is_flashback_thread_url(request.url):
         raise HTTPException(
@@ -72,12 +84,13 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
             request.url,
             max_pages=request.max_pages,
             delay=request.delay,
+            strategy=request.strategy,
         )
     except ScrapeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     summarizer = Summarizer()
-    pages = _pages_fetched(len(thread.posts))
+    pages = thread.pages_fetched
     result = summarizer.summarize(
         thread.text,
         length=request.length,
@@ -93,6 +106,9 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
         backend=result.backend,
         num_posts=len(thread.posts),
         pages_fetched=pages,
+        total_pages=thread.total_pages,
+        truncated=thread.truncated,
+        notice=thread.notice,
     )
 
 
