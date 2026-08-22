@@ -1,7 +1,9 @@
 """Tests for the summarizer (extractive fallback)."""
 from app.summarizer import (
+    MAX_LLM_CHUNKS,
     Summarizer,
     chunk_text,
+    select_chunks,
     llm_api_key,
     llm_base_url,
     llm_model,
@@ -93,3 +95,39 @@ def test_llm_failure_falls_back_to_extractive():
     assert result.backend == "extractive"
     assert result.tldr
     assert result.bullets
+
+
+def test_select_chunks_keeps_richest_chunks_in_order():
+    chunks = ["kort", "en mycket längre bit text", "mellanlång text"]
+    assert select_chunks(chunks, max_chunks=2) == [
+        "en mycket längre bit text",
+        "mellanlång text",
+    ]
+    # Nothing is dropped when the thread fits within the budget.
+    assert select_chunks(chunks, max_chunks=5) == chunks
+
+
+def test_select_chunks_caps_huge_threads():
+    chunks = [f"Stycke {i}" for i in range(MAX_LLM_CHUNKS * 3)]
+    assert len(select_chunks(chunks)) == MAX_LLM_CHUNKS
+
+
+def test_llm_map_runs_in_parallel_and_respects_chunk_cap():
+    calls = []
+
+    class FakeSummarizer(Summarizer):
+        def _llm_map(self, chunk):
+            calls.append(chunk)
+            return f"sammanfattning: {chunk[:10]}"
+
+        def _llm_complete(self, prompt, *, max_tokens):
+            return "TLDR: En sammanfattning.\n- Punkt ett\n- Punkt två"
+
+    summarizer = FakeSummarizer(api_key=None, chunk_size=50)
+    summarizer._llm = object()  # pretend a provider is configured
+    text = "\n\n".join(f"Stycke nummer {i} med en del text." for i in range(60))
+    result = summarizer.summarize(text, length="short")
+    assert result.backend == "llm"
+    assert result.tldr == "En sammanfattning."
+    assert result.bullets == ["Punkt ett", "Punkt två"]
+    assert 0 < len(calls) <= MAX_LLM_CHUNKS

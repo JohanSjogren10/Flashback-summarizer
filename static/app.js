@@ -3,6 +3,8 @@ const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 const submitBtn = document.getElementById("submit-btn");
 
+let statusTimer = null;
+
 function showStatus(message, isError = false, loading = false) {
   statusEl.hidden = false;
   statusEl.classList.toggle("error", isError);
@@ -15,6 +17,21 @@ function hideStatus() {
   statusEl.hidden = true;
 }
 
+function startProgress() {
+  stopProgress();
+  showStatus("Hämtar sidor \u2026", false, true);
+  statusTimer = window.setTimeout(() => {
+    showStatus("Sammanfattar \u2026", false, true);
+  }, 4000);
+}
+
+function stopProgress() {
+  if (statusTimer !== null) {
+    window.clearTimeout(statusTimer);
+    statusTimer = null;
+  }
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   resultEl.hidden = true;
@@ -25,27 +42,22 @@ form.addEventListener("submit", async (event) => {
   const strategy = document.getElementById("strategy").value;
   const delay = parseFloat(document.getElementById("delay").value);
 
-  if (estimateSeconds() > 120 &&
-      !window.confirm(
-        `Det här kan ta ungefär ${estimateText()}. Vill du fortsätta?`
-      )) {
-    return;
+  const payload = { url, length, strategy };
+  if (Number.isFinite(maxPages)) {
+    payload.max_pages = maxPages;
+  }
+  if (Number.isFinite(delay)) {
+    payload.delay = delay;
   }
 
   submitBtn.disabled = true;
-  showStatus("Hämtar och sammanfattar tråden … detta kan ta en stund.", false, true);
+  startProgress();
 
   try {
     const response = await fetch("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url,
-        length,
-        max_pages: maxPages,
-        strategy,
-        delay,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
@@ -62,36 +74,10 @@ form.addEventListener("submit", async (event) => {
   } catch (err) {
     showStatus(err.message, true);
   } finally {
+    stopProgress();
     submitBtn.disabled = false;
   }
 });
-
-function estimateSeconds() {
-  const maxPages = parseInt(document.getElementById("max_pages").value, 10) || 1;
-  const delay = parseFloat(document.getElementById("delay").value) || 0;
-  return maxPages * (delay + 1);
-}
-
-function estimateText() {
-  const seconds = estimateSeconds();
-  if (seconds < 90) {
-    return `${Math.round(seconds)} sekunder`;
-  }
-  return `${Math.round(seconds / 60)} minuter`;
-}
-
-function updateEstimate() {
-  const maxPages = parseInt(document.getElementById("max_pages").value, 10) || 1;
-  document.getElementById("estimate").textContent =
-    `Uppskattad tid: ${maxPages} sidor \u00d7 ~${
-      parseFloat(document.getElementById("delay").value) || 0
-    } s \u2248 ${estimateText()}.`;
-}
-
-["max_pages", "delay"].forEach((id) => {
-  document.getElementById(id).addEventListener("input", updateEstimate);
-});
-updateEstimate();
 
 function renderResult(data) {
   document.getElementById("result-title").textContent =

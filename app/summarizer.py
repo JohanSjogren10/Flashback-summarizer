@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -35,6 +36,13 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _WORD_RE = re.compile(r"[\wåäöÅÄÖ]+", re.UNICODE)
 
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
+
+#: Largest number of chunks sent to the LLM. Huge threads would otherwise turn
+#: into dozens of API calls; the most content-rich chunks are used instead.
+MAX_LLM_CHUNKS = 12
+
+#: How many chunk summaries to request in parallel.
+LLM_CONCURRENCY = 4
 
 
 def llm_api_key() -> Optional[str]:
@@ -114,6 +122,26 @@ def chunk_text(text: str, max_chars: int = 6000) -> List[str]:
     if current:
         chunks.append("\n\n".join(current))
     return chunks
+
+
+def select_chunks(
+    chunks: List[str], max_chunks: int = MAX_LLM_CHUNKS
+) -> List[str]:
+    """Keep at most *max_chunks* of the most content-rich chunks.
+
+    Chunks are ranked by length (a proxy for how much substance they carry)
+    and returned in their original order so the thread still reads
+    chronologically.
+    """
+    if max_chunks < 1:
+        raise ValueError("max_chunks must be positive")
+    if len(chunks) <= max_chunks:
+        return chunks
+    ranked = sorted(
+        range(len(chunks)), key=lambda i: len(chunks[i]), reverse=True
+    )
+    keep = sorted(ranked[:max_chunks])
+    return [chunks[i] for i in keep]
 
 
 def _extractive_summary(text: str, max_sentences: int) -> List[str]:
@@ -245,10 +273,18 @@ class Summarizer:
     def _summarize_llm(
         self, text: str, bullet_target: int
     ) -> tuple[str, List[str]]:
-        chunks = chunk_text(text, self.chunk_size)
-        chunk_summaries = [self._llm_map(chunk) for chunk in chunks]
+        chunks = select_chunks(chunk_text(text, self.chunk_size))
+        chunk_summaries = self._llm_map_all(chunks)
         combined = "\n\n".join(s for s in chunk_summaries if s)
         return self._llm_reduce(combined, bullet_target)
+
+    def _llm_map_all(self, chunks: List[str]) -> List[str]:
+        """Summarize every chunk, a few requests at a time."""
+        if len(chunks) <= 1:
+            return [self._llm_map(chunk) for chunk in chunks]
+        workers = min(LLM_CONCURRENCY, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self._llm_map, chunks))
 
     def _llm_map(self, chunk: str) -> str:
         prompt = (

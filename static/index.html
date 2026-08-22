@@ -24,51 +24,52 @@
           required
         />
 
-        <div class="controls">
-          <div class="control">
-            <label for="length">Längd</label>
-            <select id="length" name="length">
-              <option value="short">Kort</option>
-              <option value="medium" selected>Medel</option>
-              <option value="long">Lång</option>
-            </select>
-          </div>
-          <div class="control">
-            <label for="max_pages">Max sidor</label>
-            <input
-              id="max_pages"
-              name="max_pages"
-              type="number"
-              min="1"
-              max="200"
-              value="20"
-            />
-          </div>
-          <div class="control">
-            <label for="strategy">Urval</label>
-            <select id="strategy" name="strategy">
-              <option value="spread" selected>Spritt över tråden</option>
-              <option value="first">Början av tråden</option>
-              <option value="last">Slutet av tråden</option>
-            </select>
-          </div>
-          <div class="control">
-            <label for="delay">Fördröjning (sek)</label>
-            <input
-              id="delay"
-              name="delay"
-              type="number"
-              min="0"
-              max="60"
-              step="0.5"
-              value="2"
-            />
-          </div>
-        </div>
-
-        <p id="estimate" class="meta"></p>
-
         <button type="submit" id="submit-btn">Sammanfatta</button>
+
+        <details class="advanced">
+          <summary>Avancerat</summary>
+          <div class="controls">
+            <div class="control">
+              <label for="length">Längd</label>
+              <select id="length" name="length">
+                <option value="short">Kort</option>
+                <option value="medium" selected>Medel</option>
+                <option value="long">Lång</option>
+              </select>
+            </div>
+            <div class="control">
+              <label for="max_pages">Max sidor</label>
+              <input
+                id="max_pages"
+                name="max_pages"
+                type="number"
+                min="1"
+                max="200"
+                value="10"
+              />
+            </div>
+            <div class="control">
+              <label for="strategy">Urval</label>
+              <select id="strategy" name="strategy">
+                <option value="spread" selected>Spritt över tråden</option>
+                <option value="first">Början av tråden</option>
+                <option value="last">Slutet av tråden</option>
+              </select>
+            </div>
+            <div class="control">
+              <label for="delay">Fördröjning (sek)</label>
+              <input
+                id="delay"
+                name="delay"
+                type="number"
+                min="0"
+                max="60"
+                step="0.5"
+                value="0.5"
+              />
+            </div>
+          </div>
+        </details>
       </form>
 
       <div id="status" class="status" hidden></div>
