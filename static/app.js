@@ -18,8 +18,8 @@ function hideStatus() {
 }
 
 function startProgress() {
-  showStatus("Hämtar sidor \u2026", false, true);
   stopProgress();
+  showStatus("Hämtar sidor \u2026", false, true);
   statusTimer = window.setTimeout(() => {
     showStatus("Sammanfattar \u2026", false, true);
   }, 4000);
