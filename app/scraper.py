@@ -12,6 +12,7 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -35,6 +36,20 @@ MAX_BACKOFF = 60.0
 
 #: How long a cached page stays fresh (seconds).
 CACHE_TTL = 900.0
+
+#: Default number of pages to read from a thread.
+DEFAULT_MAX_PAGES = 10
+
+#: Default base delay between page requests (seconds). Pages are fetched a few
+#: at a time, so the *rate* of requests stays comparable to a slower
+#: sequential run while the total wall clock time drops a lot.
+DEFAULT_DELAY = 0.5
+
+#: How many pages we are willing to fetch at the same time.
+MAX_CONCURRENCY = 4
+
+#: Number of rate limit hits after which we go back to one page at a time.
+SEQUENTIAL_AFTER_RATE_LIMITS = 2
 
 STRATEGIES = ("first", "spread", "last")
 
@@ -368,7 +383,12 @@ def _build_client(user_agent: str, timeout: float) -> httpx.Client:
 
 
 class _Fetcher:
-    """Fetches thread pages with caching, retries and adaptive throttling."""
+    """Fetches thread pages with caching, retries and adaptive throttling.
+
+    Safe to use from several threads at once: a shared "slot" throttle keeps
+    the global request rate polite even when pages are fetched in parallel,
+    and a rate limit pauses every worker, not just the one that hit it.
+    """
 
     def __init__(
         self,
@@ -385,20 +405,44 @@ class _Fetcher:
         self.cache = cache
         self.referer: Optional[str] = None
         self._successes = 0
+        self._rate_limit_hits = 0
+        self._lock = threading.Lock()
+        self._serial_lock = threading.Lock()
+        self._next_slot = time.monotonic()
 
-    def wait_between_pages(self) -> None:
-        if self.delay > 0:
-            time.sleep(_jittered(self.delay))
+    @property
+    def sequential(self) -> bool:
+        """True once the server has rate limited us repeatedly."""
+        with self._lock:
+            return self._rate_limit_hits >= SEQUENTIAL_AFTER_RATE_LIMITS
+
+    def _reserve_slot(self) -> None:
+        """Wait until this worker is allowed to send its request."""
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next_slot)
+            self._next_slot = start + _jittered(self.delay)
+        wait = start - now
+        if wait > 0:
+            time.sleep(wait)
+
+    def _pause_all(self, seconds: float) -> None:
+        """Hold back every worker for *seconds* after a rate limit."""
+        with self._lock:
+            self._next_slot = max(self._next_slot, time.monotonic() + seconds)
 
     def _slow_down(self) -> None:
-        self._successes = 0
-        self.delay = min(MAX_DELAY, max(1.0, self.delay * 2))
+        with self._lock:
+            self._successes = 0
+            self._rate_limit_hits += 1
+            self.delay = min(MAX_DELAY, max(1.0, self.delay * 2))
 
     def _speed_up(self) -> None:
-        self._successes += 1
-        if self._successes >= 3 and self.delay > self.base_delay:
-            self.delay = max(self.base_delay, self.delay * 0.75)
-            self._successes = 0
+        with self._lock:
+            self._successes += 1
+            if self._successes >= 3 and self.delay > self.base_delay:
+                self.delay = max(self.base_delay, self.delay * 0.75)
+                self._successes = 0
 
     def get(self, url: str) -> str:
         if self.cache is not None:
@@ -406,14 +450,27 @@ class _Fetcher:
             if cached is not None:
                 return cached
 
-        html = self._get_with_retries(url)
-        self.referer = url
+        if self.sequential:
+            # Repeated rate limits: fall back to one page at a time.
+            with self._serial_lock:
+                html = self._fetch(url)
+        else:
+            html = self._fetch(url)
+
+        with self._lock:
+            self.referer = url
         if self.cache is not None:
             self.cache.set(url, html)
         return html
 
+    def _fetch(self, url: str) -> str:
+        self._reserve_slot()
+        return self._get_with_retries(url)
+
     def _get_with_retries(self, url: str) -> str:
-        headers = {"Referer": self.referer} if self.referer else None
+        with self._lock:
+            referer = self.referer
+        headers = {"Referer": referer} if referer else None
         last_status: Optional[int] = None
 
         for attempt in range(self.max_retries + 1):
@@ -446,9 +503,12 @@ class _Fetcher:
             if retry_after is not None:
                 # Honour the server's instruction exactly; jitter could make
                 # us retry sooner than allowed.
-                time.sleep(min(MAX_BACKOFF, retry_after))
+                pause = min(MAX_BACKOFF, retry_after)
             else:
-                time.sleep(_jittered(self._backoff(attempt)))
+                pause = _jittered(self._backoff(attempt))
+            # Hold back the other workers too – the limit applies to all of us.
+            self._pause_all(pause)
+            time.sleep(pause)
 
         message = (
             f"Flashback svarade {last_status} (för många förfrågningar) för "
@@ -461,17 +521,63 @@ class _Fetcher:
         return min(MAX_BACKOFF, 5.0 * (2**attempt))
 
 
+def _fetch_pages(
+    fetcher: "_Fetcher",
+    url: str,
+    thread_id: str,
+    pages: List[int],
+    *,
+    concurrency: int,
+) -> Tuple[Dict[int, str], Optional[str]]:
+    """Fetch *pages* of a thread, a few at a time.
+
+    Returns the HTML of every page that could be read plus a notice when the
+    run was cut short by rate limiting.
+    """
+    results: Dict[int, str] = {}
+    notice: Optional[str] = None
+    workers = max(1, min(concurrency, len(pages)))
+
+    if workers == 1:
+        for page in pages:
+            try:
+                results[page] = fetcher.get(_page_url(url, thread_id, page))
+            except RateLimitError as exc:
+                return results, str(exc)
+        return results, None
+
+    # Pages are fetched in batches so that a rate limit stops the run instead
+    # of hammering the server with every remaining page.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for start in range(0, len(pages), workers):
+            batch = pages[start : start + workers]
+            futures = {
+                pool.submit(fetcher.get, _page_url(url, thread_id, page)): page
+                for page in batch
+            }
+            for future, page in futures.items():
+                try:
+                    results[page] = future.result()
+                except RateLimitError as exc:
+                    if notice is None:
+                        notice = str(exc)
+            if notice is not None:
+                break
+    return results, notice
+
+
 def scrape_thread(
     url: str,
     *,
-    max_pages: int = 20,
-    delay: float = 2.0,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    delay: float = DEFAULT_DELAY,
     timeout: float = 20.0,
     user_agent: str = DEFAULT_USER_AGENT,
     client: Optional[httpx.Client] = None,
     strategy: str = "spread",
     max_retries: int = 4,
     cache: Optional[PageCache] = PAGE_CACHE,
+    concurrency: int = MAX_CONCURRENCY,
 ) -> Thread:
     """Scrape a Flashback thread and return the parsed :class:`Thread`.
 
@@ -497,6 +603,10 @@ def scrape_thread(
         Number of extra attempts per page when the server answers 429/5xx.
     cache:
         Page cache to use, or ``None`` to disable caching.
+    concurrency:
+        How many pages to fetch at the same time. The shared throttle keeps
+        the overall request rate polite; repeated rate limits automatically
+        drop back to one page at a time.
 
     Pages that cannot be fetched because of rate limiting do not fail the
     whole job: whatever was read is returned with ``truncated=True`` and a
@@ -533,17 +643,19 @@ def scrape_thread(
 
         thread.total_pages = detect_last_page(html)
         pages = select_pages(thread.total_pages, max_pages, strategy)
-        for page in pages:
-            if page == 1:
-                continue
-            fetcher.wait_between_pages()
-            try:
-                page_html = fetcher.get(_page_url(url, thread_id, page))
-            except RateLimitError as exc:
-                thread.notice = str(exc)
-                break
-            thread.posts.extend(parse_posts(page_html))
-            thread.pages.append(page)
+        remaining = [page for page in pages if page != 1]
+        if remaining:
+            fetched, notice = _fetch_pages(
+                fetcher,
+                url,
+                thread_id,
+                remaining,
+                concurrency=concurrency,
+            )
+            thread.notice = notice
+            for page in sorted(fetched):
+                thread.posts.extend(parse_posts(fetched[page]))
+                thread.pages.append(page)
     finally:
         if owns_client:
             client.close()

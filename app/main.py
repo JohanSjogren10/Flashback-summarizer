@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .scraper import (
+    DEFAULT_DELAY,
+    DEFAULT_MAX_PAGES,
     STRATEGIES,
     ScrapeError,
     is_flashback_thread_url,
@@ -27,15 +29,22 @@ app = FastAPI(
 
 
 class SummarizeRequest(BaseModel):
+    """Only the URL is required; everything else has a sensible default."""
+
     url: str = Field(..., description="URL till Flashback-tråden.")
     max_pages: int = Field(
-        20, ge=1, le=200, description="Max antal sidor att hämta."
+        DEFAULT_MAX_PAGES, ge=1, le=200, description="Max antal sidor att hämta."
     )
     length: str = Field(
         "medium", description="Längd på sammanfattningen: short/medium/long."
     )
-    delay: float = Field(
-        2.0, ge=0.0, le=60.0, description="Fördröjning mellan sidor (sek)."
+    delay: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=60.0,
+        description=(
+            "Fördröjning mellan sidor (sek). Utelämna för automatiskt värde."
+        ),
     )
     strategy: str = Field(
         "spread",
@@ -83,7 +92,7 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
         thread = scrape_thread(
             request.url,
             max_pages=request.max_pages,
-            delay=request.delay,
+            delay=DEFAULT_DELAY if request.delay is None else request.delay,
             strategy=request.strategy,
         )
     except ScrapeError as exc:

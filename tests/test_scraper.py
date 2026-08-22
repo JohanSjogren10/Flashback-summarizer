@@ -1,4 +1,6 @@
 """Tests for the Flashback scraper."""
+import re
+import threading
 from typing import List
 
 import httpx
@@ -221,6 +223,75 @@ def test_delay_grows_after_rate_limit(_no_sleep):
         strategy="first",
         cache=None,
     )
-    # Page 2 is rate limited, so scraping stops there with a partial result.
+    # Page 2 is rate limited, so the result is partial.
+    assert 2 not in thread.pages
+    assert thread.pages[0] == 1
+    assert thread.truncated
+    assert "429" in (thread.notice or "")
+
+
+def test_pages_are_fetched_in_parallel_and_ordered():
+    seen: List[str] = []
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            seen.append(request.url.path)
+        match = re.search(r"p(\d+)$", request.url.path)
+        page = int(match.group(1)) if match else 1
+        return httpx.Response(200, text=_page_html(page, total=5))
+
+    thread = scrape_thread(
+        "https://www.flashback.org/t123",
+        client=_client(handler),
+        delay=0,
+        strategy="first",
+        cache=None,
+        concurrency=4,
+    )
+    assert thread.pages == [1, 2, 3, 4, 5]
+    assert len(seen) == 5
+    # Posts follow page order even though the pages arrive concurrently.
+    texts = [post.text for post in thread.posts]
+    assert texts == [f"Inlägg på sida {n}." for n in range(1, 6)]
+
+
+def test_rate_limit_stops_further_batches():
+    requested: List[str] = []
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            requested.append(request.url.path)
+        if request.url.path == "/t123":
+            return httpx.Response(200, text=_page_html(1, total=9))
+        return httpx.Response(429)
+
+    thread = scrape_thread(
+        "https://www.flashback.org/t123",
+        client=_client(handler),
+        delay=0,
+        max_retries=0,
+        strategy="first",
+        cache=None,
+        concurrency=2,
+    )
     assert thread.pages == [1]
     assert thread.truncated
+    # Only the first batch of two pages was attempted after page 1.
+    assert len(requested) == 3
+
+
+def test_repeated_rate_limits_fall_back_to_sequential():
+    fetcher = scraper._Fetcher(
+        _client(lambda request: httpx.Response(200)),
+        delay=0,
+        max_retries=0,
+        cache=None,
+    )
+    assert not fetcher.sequential
+    for _ in range(scraper.SEQUENTIAL_AFTER_RATE_LIMITS):
+        fetcher._slow_down()
+    assert fetcher.sequential
+    assert fetcher.delay >= 1.0
+

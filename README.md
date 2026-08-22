@@ -11,19 +11,24 @@ map-reduce-strategi så att även mycket långa trådar kan hanteras.
 
 - **Scraping** av sidorna i en tråd (Flashback paginerar via `t<id>p<sida>`),
   med custom `User-Agent`, fördröjning mellan requests och en sidgräns.
+- **Parallell hämtning**: upp till 4 sidor i taget med en gemensam
+  takt-throttle, så att en tråd sammanfattas på sekunder i stället för
+  minuter utan att belasta Flashback mer än tidigare.
 - **Tål hastighetsbegränsning (429)**: nya försök med exponentiell backoff som
   respekterar `Retry-After`, automatiskt ökad fördröjning och delresultat i
   stället för ett kraschat jobb.
 - **Urvalsstrategi för långa trådar**: `spread` (jämnt fördelat över hela
   tråden, standard), `first` eller `last`.
 - **Sidcache** i minnet (15 min) så att omkörningar inte belastar Flashback.
-- **Sammanfattning** med chunkning + map-reduce.
+- **Sammanfattning** med chunkning + map-reduce (chunkarna sammanfattas
+  parallellt och antalet begränsas, så även jättetrådar går fort).
   - **LLM-motor** via valfri OpenAI-kompatibel tjänst (t.ex. Groq, OpenRouter
     eller Google Gemini – alla har gratisnivåer) när `LLM_API_KEY` är satt.
   - **Extraktiv fallback** utan externa API:er eller kostnad (fungerar offline,
     och används automatiskt om LLM-anropet misslyckas).
-- **Enkelt webbgränssnitt**: klistra in URL, välj längd, max antal sidor,
-  urval och fördröjning – med tidsuppskattning innan du startar.
+- **Enkelt webbgränssnitt**: klistra in URL och tryck **Sammanfatta**. Vill du
+  finjustera längd, max antal sidor, urval eller fördröjning finns de under
+  "Avancerat".
 
 ## Kom igång
 
@@ -102,12 +107,15 @@ docker run -p 8000:8000 flashback-summarizer
 
 `POST /api/summarize`
 
+Bara `url` är obligatoriskt – övriga fält har standardvärden
+(`max_pages: 10`, `length: "medium"`, `delay: 0.5`, `strategy: "spread"`):
+
 ```json
 {
   "url": "https://www.flashback.org/t1234567",
-  "max_pages": 20,
+  "max_pages": 10,
   "length": "medium",
-  "delay": 2.0,
+  "delay": 0.5,
   "strategy": "spread"
 }
 ```
@@ -136,10 +144,11 @@ Svar:
 ### Om `429 Too Many Requests`
 
 Flashback stryper trafik från den som hämtar många sidor snabbt. Appen gör då
-automatiskt nya försök (respekterar `Retry-After`) och ökar fördröjningen. Om
-begränsningen består returneras det som hann hämtas med `truncated: true` och
-en förklarande `notice`. Höj `delay` (t.ex. 3–5 sekunder) och/eller sänk
-`max_pages` för att slippa problemet i mycket långa trådar.
+automatiskt nya försök (respekterar `Retry-After`), pausar alla parallella
+hämtningar och ökar fördröjningen. Efter upprepade 429 hämtas sidorna en i
+taget igen. Om begränsningen består returneras det som hann hämtas med
+`truncated: true` och en förklarande `notice`. Höj `delay` (t.ex. 3–5 sekunder)
+och/eller sänk `max_pages` för att slippa problemet i mycket långa trådar.
 
 `GET /api/health` returnerar status, vilken backend som används och (om en
 nyckel är satt) modell och bas-URL. Använd den som hälsokontroll hos din

@@ -4,7 +4,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.scraper import Post, Thread
+from app.scraper import DEFAULT_DELAY, DEFAULT_MAX_PAGES, Post, Thread
 
 client = TestClient(app)
 
@@ -84,3 +84,48 @@ def test_index_served():
     response = client.get("/")
     assert response.status_code == 200
     assert "Flashback Summarizer" in response.text
+
+
+def test_summarize_uses_defaults_when_only_url_is_given():
+    fake_thread = Thread(
+        url="https://www.flashback.org/t123",
+        title="Tråd",
+        posts=[Post(author="A", date=None, text="Ett inlägg om en händelse.")],
+        pages=[1],
+        total_pages=1,
+    )
+    with patch("app.main.scrape_thread", return_value=fake_thread) as scrape:
+        response = client.post(
+            "/api/summarize",
+            json={"url": "https://www.flashback.org/t123"},
+        )
+    assert response.status_code == 200
+    kwargs = scrape.call_args.kwargs
+    assert kwargs["max_pages"] == DEFAULT_MAX_PAGES
+    assert kwargs["delay"] == DEFAULT_DELAY
+    assert kwargs["strategy"] == "spread"
+
+
+def test_summarize_still_accepts_explicit_settings():
+    fake_thread = Thread(
+        url="https://www.flashback.org/t123",
+        title="Tråd",
+        posts=[Post(author="A", date=None, text="Ett inlägg om en händelse.")],
+        pages=[1],
+        total_pages=1,
+    )
+    with patch("app.main.scrape_thread", return_value=fake_thread) as scrape:
+        response = client.post(
+            "/api/summarize",
+            json={
+                "url": "https://www.flashback.org/t123",
+                "max_pages": 3,
+                "delay": 4.5,
+                "strategy": "last",
+            },
+        )
+    assert response.status_code == 200
+    kwargs = scrape.call_args.kwargs
+    assert kwargs["max_pages"] == 3
+    assert kwargs["delay"] == 4.5
+    assert kwargs["strategy"] == "last"
