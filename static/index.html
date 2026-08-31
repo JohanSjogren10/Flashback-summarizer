@@ -68,7 +68,21 @@
                 value="0.5"
               />
             </div>
+            <div class="control">
+              <label for="api_base">Backend-URL</label>
+              <input
+                id="api_base"
+                name="api_base"
+                type="url"
+                placeholder="https://din-tjanst.onrender.com"
+              />
+            </div>
           </div>
+          <p class="hint">
+            Backend-URL behövs bara när sidan ligger på GitHub Pages – då körs
+            själva sammanfattningen på en separat server (t.ex. Render). Lämna
+            tomt när du kör appen lokalt. Värdet sparas i webbläsaren.
+          </p>
         </details>
       </form>
 

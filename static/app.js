@@ -2,8 +2,46 @@ const form = document.getElementById("summarize-form");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 const submitBtn = document.getElementById("submit-btn");
+const apiBaseInput = document.getElementById("api_base");
+
+const API_BASE_STORAGE_KEY = "flashback-summarizer:api-base";
 
 let statusTimer = null;
+
+function storedApiBase() {
+  try {
+    return window.localStorage.getItem(API_BASE_STORAGE_KEY) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function saveApiBase(value) {
+  try {
+    if (value) {
+      window.localStorage.setItem(API_BASE_STORAGE_KEY, value);
+    } else {
+      window.localStorage.removeItem(API_BASE_STORAGE_KEY);
+    }
+  } catch (err) {
+    /* localStorage kan vara blockerad – strunta i det. */
+  }
+}
+
+function apiBase() {
+  const value = (apiBaseInput.value || "").trim();
+  return value.replace(/\/+$/, "");
+}
+
+function apiUrl(path) {
+  return `${apiBase()}${path}`;
+}
+
+apiBaseInput.value = storedApiBase() || window.FLASHBACK_API_BASE || "";
+apiBaseInput.addEventListener("change", () => {
+  apiBaseInput.value = apiBase();
+  saveApiBase(apiBaseInput.value);
+});
 
 function showStatus(message, isError = false, loading = false) {
   statusEl.hidden = false;
@@ -32,6 +70,15 @@ function stopProgress() {
   }
 }
 
+function describeError(err) {
+  if (err instanceof TypeError) {
+    return apiBase()
+      ? `Kunde inte nå backend på ${apiBase()}. Kontrollera att tjänsten är igång.`
+      : "Kunde inte nå backend. Ange Backend-URL under \u201cAvancerat\u201d om sidan körs på GitHub Pages.";
+  }
+  return err.message;
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   resultEl.hidden = true;
@@ -51,10 +98,11 @@ form.addEventListener("submit", async (event) => {
   }
 
   submitBtn.disabled = true;
+  saveApiBase(apiBase());
   startProgress();
 
   try {
-    const response = await fetch("/api/summarize", {
+    const response = await fetch(apiUrl("/api/summarize"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -72,7 +120,7 @@ form.addEventListener("submit", async (event) => {
       hideStatus();
     }
   } catch (err) {
-    showStatus(err.message, true);
+    showStatus(describeError(err), true);
   } finally {
     stopProgress();
     submitBtn.disabled = false;

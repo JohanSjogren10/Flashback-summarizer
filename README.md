@@ -71,6 +71,28 @@ Appen kräver ingen databas och ingen betald tjänst. Rekommenderade
 gratisalternativ (Hugging Face Spaces används inte längre eftersom en
 Docker-Space kostar pengar):
 
+### GitHub Pages (frontend) + Render/Koyeb (backend)
+
+Vill du ha en länk av typen
+`https://<användare>.github.io/Flashback-summarizer` publicerar
+`.github/workflows/pages.yml` innehållet i `static/` som en Pages-sida.
+
+GitHub Pages kan bara servera statiska filer, så själva scrapingen och
+sammanfattningen måste köras på en backend (se Render/Koyeb nedan):
+
+1. Driftsätt backend först (t.ex. på Render) och notera dess URL.
+2. Aktivera Pages i repot: **Settings → Pages → Source: GitHub Actions**.
+3. Lägg till repo-variabeln `API_BASE_URL` med backendens URL
+   (**Settings → Secrets and variables → Actions → Variables**). Utan den kan
+   besökaren i stället fylla i **Backend-URL** under "Avancerat" på sidan –
+   värdet sparas i webbläsaren.
+4. Kör workflowet (push till `main` eller **Actions → Run workflow**).
+
+Backenden svarar med CORS-headers så att Pages-sidan får anropa den. Sätt
+miljövariabeln `ALLOWED_ORIGINS` (kommaseparerad lista, t.ex.
+`https://<användare>.github.io`) om du vill begränsa vilka sidor som får
+anropa API:et; standard är alla.
+
 ### Render (enklast, gratisplan)
 
 1. Skapa ett konto på https://render.com och välj **New → Blueprint**.

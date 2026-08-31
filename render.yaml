@@ -20,3 +20,7 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false
+      # Optional: restrict which sites may call the API from a browser, e.g.
+      # https://<user>.github.io when the frontend runs on GitHub Pages.
+      - key: ALLOWED_ORIGINS
+        sync: false

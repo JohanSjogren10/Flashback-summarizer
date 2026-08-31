@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import allowed_origins, app
 from app.scraper import DEFAULT_DELAY, DEFAULT_MAX_PAGES, Post, Thread
 
 client = TestClient(app)
@@ -129,3 +129,26 @@ def test_summarize_still_accepts_explicit_settings():
     assert kwargs["max_pages"] == 3
     assert kwargs["delay"] == 4.5
     assert kwargs["strategy"] == "last"
+
+
+def test_health_allows_cross_origin_requests():
+    response = client.get(
+        "/api/health", headers={"Origin": "https://example.github.io"}
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_allowed_origins_can_be_restricted(monkeypatch):
+    monkeypatch.setenv(
+        "ALLOWED_ORIGINS", "https://example.github.io, https://other.example"
+    )
+    assert allowed_origins() == [
+        "https://example.github.io",
+        "https://other.example",
+    ]
+
+
+def test_allowed_origins_defaults_to_any(monkeypatch):
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    assert allowed_origins() == ["*"]

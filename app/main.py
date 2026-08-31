@@ -4,7 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional
 
+import os
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,6 +28,29 @@ app = FastAPI(
     title="Flashback Summarizer",
     description="Summera en Flashback-tråd utan att klicka igenom alla sidor.",
     version="1.0.0",
+)
+
+
+def allowed_origins() -> List[str]:
+    """Origins allowed to call the API from a browser.
+
+    The frontend can be hosted separately (e.g. GitHub Pages) while the API
+    runs on Render/Koyeb. Set ``ALLOWED_ORIGINS`` (comma separated) to limit
+    which sites may call the API. The default allows every origin, since the
+    API has neither login nor cookies.
+    """
+
+    raw = os.getenv("ALLOWED_ORIGINS", "*")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 

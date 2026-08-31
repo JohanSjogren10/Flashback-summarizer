@@ -1,0 +1,59 @@
+# Publishes the frontend in static/ as a GitHub Pages site, e.g.
+# https://<user>.github.io/Flashback-summarizer
+#
+# GitHub Pages only serves static files, so the page talks to the FastAPI
+# backend (Render/Koyeb/...) over HTTP. Set the repository variable
+# API_BASE_URL to the backend's public URL, otherwise the visitor can enter it
+# manually under "Avancerat".
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "static/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build site
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          mkdir -p site
+          cp static/index.html static/app.js static/style.css site/
+          # On Pages the files live next to index.html, not under /static/.
+          sed -i 's#"/static/#"./#g' site/index.html
+          printf 'window.FLASHBACK_API_BASE = "%s";\n' "$API_BASE_URL" > site/config.js
+          sed -i 's#<script src="./app.js"></script>#<script src="./config.js"></script>\n    <script src="./app.js"></script>#' site/index.html
+          # Pages would otherwise run the files through Jekyll.
+          touch site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
