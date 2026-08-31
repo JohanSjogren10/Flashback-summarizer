@@ -46,9 +46,13 @@ apiBaseInput.addEventListener("change", () => {
 function showStatus(message, isError = false, loading = false) {
   statusEl.hidden = false;
   statusEl.classList.toggle("error", isError);
-  statusEl.innerHTML = loading
-    ? `<span class="spinner"></span>${message}`
-    : message;
+  statusEl.textContent = "";
+  if (loading) {
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    statusEl.appendChild(spinner);
+  }
+  statusEl.appendChild(document.createTextNode(message));
 }
 
 function hideStatus() {

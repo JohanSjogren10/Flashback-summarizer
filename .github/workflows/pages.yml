@@ -38,7 +38,8 @@ jobs:
           cp static/index.html static/app.js static/style.css site/
           # On Pages the files live next to index.html, not under /static/.
           sed -i 's#"/static/#"./#g' site/index.html
-          printf 'window.FLASHBACK_API_BASE = "%s";\n' "$API_BASE_URL" > site/config.js
+          printf 'window.FLASHBACK_API_BASE = %s;\n' \
+            "$(jq -cn --arg url "$API_BASE_URL" '$url')" > site/config.js
           sed -i 's#<script src="./app.js"></script>#<script src="./config.js"></script>\n    <script src="./app.js"></script>#' site/index.html
           # Pages would otherwise run the files through Jekyll.
           touch site/.nojekyll
